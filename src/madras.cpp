@@ -73,7 +73,18 @@ struct madras_cursor {
   uint8_t *val_buf;
   int key_len;
   int val_len;
+  bool is_point_lookup;
+  bool is_val_scan;
+  bool is_eof;
+  madras_dv1::ctx_vars cv;
+  uint8_t *given_val;
+  int given_val_len;
   sqlite3_int64 iRowid;      /* The rowid */
+  void init() {
+    key_buf = val_buf = given_val = NULL;
+    key_len = val_len = given_val_len = 0;
+    is_point_lookup = is_val_scan = is_eof = false;
+  }
 };
 
 /*
@@ -100,11 +111,8 @@ static int madrasConnect(
   int rc;
 
   rc = sqlite3_declare_vtab(db,
-           "CREATE TABLE x(a,b)"
+           "CREATE TABLE x (key, val)"
        );
-  /* For convenience, define symbolic names for the index to each column. */
-#define MADRAS_A  0
-#define MADRAS_B  1
   if( rc==SQLITE_OK ){
     pNew = (madras_vtab *) sqlite3_malloc( sizeof(*pNew) );
     *ppVtab = (sqlite3_vtab*)pNew;
@@ -143,13 +151,32 @@ static int madrasDisconnect(sqlite3_vtab *pVtab){
 */
 static int madrasNext(sqlite3_vtab_cursor *cur){
   madras_cursor *pCur = (madras_cursor*)cur;
+  if (pCur->is_point_lookup && !pCur->is_val_scan && pCur->key_len != 0) {
+    pCur->is_eof = true;
+    return SQLITE_OK;
+  }
   madras_vtab *vtab = (madras_vtab *) pCur->base.pVtab;
   madras_dv1::static_dict *dict = &vtab->dict;
-  pCur->key_len = dict->next(pCur->ctx, pCur->key_buf, pCur->val_buf, &pCur->val_len);
-  if (pCur->key_len != 0)
-    pCur->iRowid = pCur->ctx.node_path[pCur->ctx.cur_idx];
-  else
-    pCur->iRowid = -1;
+  if (pCur->is_val_scan && pCur->is_point_lookup) {
+    //printf("Given val: %d, [%.*s]\n", pCur->given_val_len, pCur->given_val_len, pCur->given_val);
+    while (dict->trie_ptrs_data.val_map.next_val(pCur->cv, &pCur->val_len, pCur->val_buf)) {
+      if (madras_dv1::cmn::compare(pCur->val_buf, pCur->val_len, pCur->given_val, pCur->given_val_len) == 0) {
+        //printf("Val: %d, [%.*s]\n", pCur->val_len, pCur->val_len, pCur->val_buf);
+        dict->reverse_lookup_from_node_id(pCur->cv.node_id, &pCur->key_len, pCur->key_buf);
+        pCur->iRowid = pCur->cv.node_id;
+        pCur->cv.node_id++;
+        return SQLITE_OK;
+      }
+      pCur->cv.node_id++;
+    }
+    pCur->is_eof = true;
+    return SQLITE_OK;
+  } else
+    pCur->key_len = dict->next(pCur->ctx, pCur->key_buf, pCur->val_buf, &pCur->val_len);
+  pCur->iRowid = pCur->ctx.node_path[pCur->ctx.cur_idx];
+  pCur->is_eof = false;
+  if (pCur->key_len == 0)
+    pCur->is_eof = true;
   return SQLITE_OK;
 }
 
@@ -165,10 +192,10 @@ static int madrasOpen(sqlite3_vtab *p, sqlite3_vtab_cursor **ppCursor){
   *ppCursor = &pCur->base;
   madras_vtab *vtab = (madras_vtab *) p;
   madras_dv1::static_dict *dict = &vtab->dict;
+  pCur->init();
   pCur->key_buf = (uint8_t *) sqlite3_malloc(dict->get_max_key_len());
   pCur->val_buf = (uint8_t *) sqlite3_malloc(dict->get_max_val_len());
-  pCur->val_len = 0;
-  pCur->key_len = 0;
+  pCur->given_val = (uint8_t *) sqlite3_malloc(dict->get_max_val_len());
   return SQLITE_OK;
 }
 
@@ -183,12 +210,12 @@ static int madrasClose(sqlite3_vtab_cursor *cur){
 
 
 static uint32_t read_uint32(const uint8_t *ptr) {
-    uint32_t ret;
-    ret = ((uint32_t)*ptr++) << 24;
-    ret += ((uint32_t)*ptr++) << 16;
-    ret += ((uint32_t)*ptr++) << 8;
-    ret += *ptr;
-    return ret;
+  uint32_t ret;
+  ret = ((uint32_t)*ptr++) << 24;
+  ret += ((uint32_t)*ptr++) << 16;
+  ret += ((uint32_t)*ptr++) << 8;
+  ret += *ptr;
+  return ret;
 }
 
 /*
@@ -202,12 +229,12 @@ static int madrasColumn(
 ){
   madras_cursor *pCur = (madras_cursor*)cur;
   switch( i ){
-    case MADRAS_A:
+    case 0:
       sqlite3_result_text(ctx, (const char *) pCur->key_buf, pCur->key_len, NULL);
       break;
     default:
-      assert( i==MADRAS_B );
-      sqlite3_result_int(ctx, read_uint32(pCur->val_buf));
+      sqlite3_result_text(ctx, (const char *) pCur->val_buf, pCur->val_len, NULL);
+      //sqlite3_result_int(ctx, read_uint32(pCur->val_buf));
       break;
   }
   return SQLITE_OK;
@@ -229,7 +256,7 @@ static int madrasRowid(sqlite3_vtab_cursor *cur, sqlite_int64 *pRowid){
 */
 static int madrasEof(sqlite3_vtab_cursor *cur){
   madras_cursor *pCur = (madras_cursor*)cur;
-  return pCur->iRowid == -1;
+  return pCur->is_eof;
 }
 
 /*
@@ -244,13 +271,29 @@ static int madrasFilter(
   int argc, sqlite3_value **argv
 ){
   madras_cursor *pCur = (madras_cursor *)pVtabCursor;
-  pCur->ctx.cur_idx = 0;
-  pCur->ctx.key_pos = 0;
-  pCur->ctx.key.resize(0);
-  pCur->ctx.child_count.resize(0);
-  pCur->ctx.node_path.resize(0);
-  pCur->ctx.last_tail_len.resize(0);
-  pCur->ctx.init();
+  pCur->key_len = 0;
+  pCur->ctx.reset();
+  printf("idxNum: %d, argc: %d, idxStr: %s\n", idxNum, argc, idxStr);
+  for (int i = 0; i < argc; i++) {
+    printf("arg %d: %s\n", i, sqlite3_value_text(argv[i]));
+  }
+  madras_vtab *vtab = (madras_vtab *) pCur->base.pVtab;
+  madras_dv1::static_dict *dict = &vtab->dict;
+  if (argc == 1 && idxNum == 1) {
+    const uint8_t *key = sqlite3_value_text(argv[0]);
+    pCur->ctx = dict->find_first(key, strlen((const char *) key));
+    pCur->ctx.to_skip_first_leaf = false;
+    pCur->is_point_lookup = true;
+    pCur->key_len = 0;
+  }
+  if (argc == 1 && idxNum == 2) {
+    pCur->is_val_scan = true;
+    pCur->is_point_lookup = true;
+    const uint8_t *val = sqlite3_value_text(argv[0]);
+    pCur->given_val_len = strlen((const char *) val);
+    memcpy(pCur->given_val, val, pCur->given_val_len);
+    pCur->cv.init_cv_nid0(dict->trie_ptrs_data.trie_loc);
+  }
   return madrasNext(pVtabCursor);
 }
 
@@ -264,6 +307,17 @@ static int madrasBestIndex(
   sqlite3_vtab *tab,
   sqlite3_index_info *pIdxInfo
 ){
+  printf("nConstraint: %d\n", pIdxInfo->nConstraint);
+  for (int i = 0; i < pIdxInfo->nConstraint; i++) {
+    printf("c%d: iColumn: %d, op: %d, usable: %d\n", i, pIdxInfo->aConstraint[i].iColumn, pIdxInfo->aConstraint[i].op, pIdxInfo->aConstraint[i].usable);
+    if (pIdxInfo->aConstraint[i].usable) {
+      pIdxInfo->aConstraintUsage[i].argvIndex = i + 1;
+      pIdxInfo->idxNum = pIdxInfo->aConstraint[i].iColumn + 1;
+    }
+  }
+  // if (pIdxInfo->nConstraint == 1 && pIdxInfo->aConstraint[0].iColumn == 0) {
+  //   pIdxInfo->aConstraintUsage[0].argvIndex = 1;
+  // }
   pIdxInfo->estimatedCost = (double)10;
   pIdxInfo->estimatedRows = 10;
   return SQLITE_OK;
@@ -319,34 +373,3 @@ int sqlite3_madras_init(
 }
 
 }
-
-// 1 - int8
-// 2 - int16
-// 4 - int32
-// 8 - int64
-// t - text
-// d - f64
-// f - f32
-// b - binary
-// v - varint64
-// s - sortable varint
-
-// d - distinct
-// s - suffix coding
-// p - prefix coding
-// t - trie
-// r - record
-// s - store
-
-// 0 - no compression
-// s - snappy
-// 4 - lz4
-// 2 - unishox2
-// 3 - unishox3
-// t - zstd
-// b - bz2
-// z - zip
-// g - gzip
-// 7 - 7z
-// a - lzma
-// r - rar

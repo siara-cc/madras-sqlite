@@ -8,14 +8,14 @@ M_FLAGS = -mbmi2 -mpopcnt
 #OBJS = build/imain.o
 
 opt: CXXFLAGS += -O3 -funroll-loops -DNDEBUG
-opt: madras
+opt: madras.dylib
 
 debug: CXXFLAGS += -g -O0 -fno-inline
-debug: imain
+debug: madras.dylib
 
 clean:
-	rm madras
+	rm madras.dylib
 	rm -rf madras.dSYM
 
-madras: src/madras.cpp ../madras-trie/src/madras_dv1.h
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -std=c++11 -fPIC -shared src/madras.cpp ./sqlite-amalgamation-3430200/sqlite3.o -o madras
+madras.dylib: src/madras.cpp ../madras-trie/src/madras_dv1.h
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -std=c++11 -fPIC -shared src/madras.cpp ./sqlite-amalgamation-3430200/sqlite3.o -o madras.dylib
