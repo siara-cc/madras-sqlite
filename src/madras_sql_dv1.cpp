@@ -43,14 +43,9 @@
 **
 **     SELECT rowid, a, b FROM madras;
 */
-#if !defined(SQLITEINT_H)
-#include "sqlite3ext.h"
-#endif
-SQLITE_EXTENSION_INIT1
-#include <string.h>
-#include <assert.h>
-#include <stdio.h>
-#include "../../madras-trie/src/madras_dv1.h"
+
+#include "madras_c_stubs.h"
+#include "../../madras-trie/src/madras_dv1.hpp"
 
 /* madras_vtab is a subclass of sqlite3_vtab which is
 ** underlying representation of the virtual table
@@ -110,11 +105,11 @@ static int madrasConnect(
   madras_vtab *pNew;
   int rc;
 
-  rc = sqlite3_declare_vtab(db,
+  rc = sqlite3_declare_vtab_stub(db,
            "CREATE TABLE x (key, val)"
        );
   if( rc==SQLITE_OK ){
-    pNew = (madras_vtab *) sqlite3_malloc( sizeof(*pNew) );
+    pNew = (madras_vtab *) sqlite3_malloc_stub( sizeof(*pNew) );
     *ppVtab = (sqlite3_vtab*)pNew;
     if( pNew==0 ) return SQLITE_NOMEM;
     memset(pNew, 0, sizeof(*pNew));
@@ -142,7 +137,7 @@ static int madrasCreate(
 */
 static int madrasDisconnect(sqlite3_vtab *pVtab){
   madras_vtab *p = (madras_vtab*)pVtab;
-  sqlite3_free(p);
+  sqlite3_free_stub(p);
   return SQLITE_OK;
 }
 
@@ -159,7 +154,7 @@ static int madrasNext(sqlite3_vtab_cursor *cur){
   madras_dv1::static_dict *dict = &vtab->dict;
   if (pCur->is_val_scan && pCur->is_point_lookup) {
     //printf("Given val: %d, [%.*s]\n", pCur->given_val_len, pCur->given_val_len, pCur->given_val);
-    while (dict->trie_ptrs_data.val_map.next_val(pCur->cv, &pCur->val_len, pCur->val_buf)) {
+    while (dict->val_map->next_val(pCur->cv, &pCur->val_len, pCur->val_buf)) {
       if (madras_dv1::cmn::compare(pCur->val_buf, pCur->val_len, pCur->given_val, pCur->given_val_len) == 0) {
         //printf("Val: %d, [%.*s]\n", pCur->val_len, pCur->val_len, pCur->val_buf);
         dict->reverse_lookup_from_node_id(pCur->cv.node_id, &pCur->key_len, pCur->key_buf);
@@ -185,17 +180,18 @@ static int madrasNext(sqlite3_vtab_cursor *cur){
 */
 static int madrasOpen(sqlite3_vtab *p, sqlite3_vtab_cursor **ppCursor){
   madras_cursor *pCur;
-  pCur = (madras_cursor *) sqlite3_malloc( sizeof(*pCur) );
+  pCur = (madras_cursor *) sqlite3_malloc_stub( sizeof(*pCur) );
   if( pCur==0 ) return SQLITE_NOMEM;
   memset(pCur, 0, sizeof(*pCur));
-  pCur->ctx.init();
-  *ppCursor = &pCur->base;
   madras_vtab *vtab = (madras_vtab *) p;
   madras_dv1::static_dict *dict = &vtab->dict;
+  printf("Max Key Len: %u, val len: %u, max lvl: %u\n", dict->get_max_key_len(), dict->get_max_val_len(), dict->get_max_level());
+  pCur->ctx.init(dict->get_max_key_len(), dict->get_max_level());
+  *ppCursor = &pCur->base;
   pCur->init();
-  pCur->key_buf = (uint8_t *) sqlite3_malloc(dict->get_max_key_len());
-  pCur->val_buf = (uint8_t *) sqlite3_malloc(dict->get_max_val_len());
-  pCur->given_val = (uint8_t *) sqlite3_malloc(dict->get_max_val_len());
+  pCur->key_buf = (uint8_t *) sqlite3_malloc_stub(dict->get_max_key_len());
+  pCur->val_buf = (uint8_t *) sqlite3_malloc_stub(dict->get_max_val_len());
+  pCur->given_val = (uint8_t *) sqlite3_malloc_stub(dict->get_max_val_len());
   return SQLITE_OK;
 }
 
@@ -204,7 +200,7 @@ static int madrasOpen(sqlite3_vtab *p, sqlite3_vtab_cursor **ppCursor){
 */
 static int madrasClose(sqlite3_vtab_cursor *cur){
   madras_cursor *pCur = (madras_cursor*)cur;
-  sqlite3_free(pCur);
+  sqlite3_free_stub(pCur);
   return SQLITE_OK;
 }
 
@@ -271,14 +267,14 @@ static int madrasFilter(
   int argc, sqlite3_value **argv
 ){
   madras_cursor *pCur = (madras_cursor *)pVtabCursor;
+  madras_vtab *vtab = (madras_vtab *) pCur->base.pVtab;
+  madras_dv1::static_dict *dict = &vtab->dict;
   pCur->key_len = 0;
-  pCur->ctx.reset();
+  pCur->ctx.init(dict->get_max_key_len(), dict->get_max_level());
   printf("idxNum: %d, argc: %d, idxStr: %s\n", idxNum, argc, idxStr);
   for (int i = 0; i < argc; i++) {
     printf("arg %d: %s\n", i, sqlite3_value_text(argv[i]));
   }
-  madras_vtab *vtab = (madras_vtab *) pCur->base.pVtab;
-  madras_dv1::static_dict *dict = &vtab->dict;
   if (argc == 1 && idxNum == 1) {
     const uint8_t *key = sqlite3_value_text(argv[0]);
     pCur->ctx = dict->find_first(key, strlen((const char *) key));
@@ -292,7 +288,7 @@ static int madrasFilter(
     const uint8_t *val = sqlite3_value_text(argv[0]);
     pCur->given_val_len = strlen((const char *) val);
     memcpy(pCur->given_val, val, pCur->given_val_len);
-    pCur->cv.init_cv_nid0(dict->trie_ptrs_data.trie_loc);
+    pCur->cv.init_cv_nid0(dict->get_trie_loc());
   }
   return madrasNext(pVtabCursor);
 }
@@ -323,11 +319,23 @@ static int madrasBestIndex(
   return SQLITE_OK;
 }
 
+#ifdef _WIN32
+#ifdef MY_LIBRARY_IMPORTS
+#define MY_LIBRARY_API __declspec(dllimport)
+#else
+#define MY_LIBRARY_API __declspec(dllexport)
+#endif
+#else
+#define MY_LIBRARY_API __attribute__((visibility("default"))) 
+#endif
+
+extern "C" {
+
 /*
 ** This following structure defines all the methods for the 
 ** virtual table.
 */
-static sqlite3_module madrasModule = {
+MY_LIBRARY_API sqlite3_module madrasModule = {
   /* iVersion    */ 0,
   /* xCreate     */ madrasCreate,
   /* xConnect    */ madrasConnect,
@@ -355,18 +363,9 @@ static sqlite3_module madrasModule = {
   ///* xIntegrity  */ 0
 };
 
-extern "C" {
-
-#ifdef _WIN32
-__declspec(dllexport)
-#endif
-int sqlite3_madras_init(
-  sqlite3 *db, 
-  char **pzErrMsg, 
-  const sqlite3_api_routines *pApi
-){
-  sqlite3_initialize();
+MY_LIBRARY_API int sqlite3_madras_init(sqlite3 *db, char **pzErrMsg, const sqlite3_api_routines *pApi) {
   int rc = SQLITE_OK;
+  sqlite3_initialize();
   SQLITE_EXTENSION_INIT2(pApi);
   rc = sqlite3_create_module(db, "madras", &madrasModule, 0);
   return rc;

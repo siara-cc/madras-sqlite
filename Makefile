@@ -17,5 +17,5 @@ clean:
 	rm madras.dylib
 	rm -rf madras.dSYM
 
-madras.dylib: src/madras.cpp ../madras-trie/src/madras_dv1.h
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -std=c++11 -fPIC -shared src/madras.cpp ./sqlite-amalgamation-3430200/sqlite3.o -o madras.dylib
+madras.dylib: src/madras_sql_dv1.cpp ../madras-trie/src/madras_dv1.hpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -std=c++11 -fPIC -dynamiclib src/madras_sql_dv1.cpp ./sqlite-amalgamation-3430200/sqlite3.o -o madras.dylib
