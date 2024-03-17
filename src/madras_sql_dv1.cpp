@@ -44,6 +44,7 @@
 **     SELECT rowid, a, b FROM madras;
 */
 
+#include <string>
 #include "madras_c_stubs.h"
 #include "../../madras-trie/src/madras_dv1.hpp"
 
@@ -53,7 +54,7 @@
 typedef struct madras_vtab madras_vtab;
 struct madras_vtab {
   sqlite3_vtab base;  /* Base class - must be first */
-  madras_dv1::static_dict dict;
+  madras_dv1::static_dict *dict;
 };
 
 /* madras_cursor is a subclass of sqlite3_vtab_cursor which will
@@ -63,7 +64,7 @@ struct madras_vtab {
 typedef struct madras_cursor madras_cursor;
 struct madras_cursor {
   sqlite3_vtab_cursor base;  /* Base class - must be first */
-  madras_dv1::dict_iter_ctx ctx;
+  madras_dv1::dict_iter_ctx *ctx;
   uint8_t *key_buf;
   uint8_t *val_buf;
   int key_len;
@@ -102,19 +103,28 @@ static int madrasConnect(
   sqlite3_vtab **ppVtab,
   char **pzErr
 ){
-  madras_vtab *pNew;
-  int rc;
-
-  rc = sqlite3_declare_vtab_stub(db,
-           "CREATE TABLE x (key, val)"
-       );
-  if( rc==SQLITE_OK ){
-    pNew = (madras_vtab *) sqlite3_malloc_stub( sizeof(*pNew) );
-    *ppVtab = (sqlite3_vtab*)pNew;
-    if( pNew==0 ) return SQLITE_NOMEM;
-    memset(pNew, 0, sizeof(*pNew));
-    pNew->dict.load(argv[3]);
+  madras_vtab *pNew = (madras_vtab *) sqlite3_malloc_stub( sizeof(*pNew) );
+  *ppVtab = (sqlite3_vtab*)pNew;
+  if( pNew==0 ) return SQLITE_NOMEM;
+  memset(pNew, 0, sizeof(*pNew));
+  pNew->dict = new madras_dv1::static_dict();
+  pNew->dict->load(argv[3]);
+  std::string vtct = "CREATE TABLE ";
+  uint8_t *names_pos = pNew->dict->names_pos;
+  char *names_loc = pNew->dict->names_loc;
+  vtct.append(strncmp(names_loc, "vtab", 4) == 0 ? argv[2] : names_loc);
+  vtct.append(" (");
+  int col_count = pNew->dict->val_count + 1;
+  for (int i = 0; i < col_count; i++) {
+    if (i > 0)
+      vtct.append(", ");
+    vtct.append(names_loc + madras_dv1::cmn::read_uint16(names_pos + i * 2));
   }
+  vtct.append(")");
+  printf("vtct: %s\n", vtct.c_str());
+  int rc = sqlite3_declare_vtab_stub(db, vtct.c_str());
+  if (rc != SQLITE_OK)
+    sqlite3_free_stub(pNew);
   return rc;
 }
 
@@ -137,6 +147,7 @@ static int madrasCreate(
 */
 static int madrasDisconnect(sqlite3_vtab *pVtab){
   madras_vtab *p = (madras_vtab*)pVtab;
+  delete p->dict;
   sqlite3_free_stub(p);
   return SQLITE_OK;
 }
@@ -151,7 +162,7 @@ static int madrasNext(sqlite3_vtab_cursor *cur){
     return SQLITE_OK;
   }
   madras_vtab *vtab = (madras_vtab *) pCur->base.pVtab;
-  madras_dv1::static_dict *dict = &vtab->dict;
+  madras_dv1::static_dict *dict = vtab->dict;
   if (pCur->is_val_scan && pCur->is_point_lookup) {
     //printf("Given val: %d, [%.*s]\n", pCur->given_val_len, pCur->given_val_len, pCur->given_val);
     while (dict->val_map->next_val(pCur->cv, &pCur->val_len, pCur->val_buf)) {
@@ -166,9 +177,11 @@ static int madrasNext(sqlite3_vtab_cursor *cur){
     }
     pCur->is_eof = true;
     return SQLITE_OK;
-  } else
-    pCur->key_len = dict->next(pCur->ctx, pCur->key_buf, pCur->val_buf, &pCur->val_len);
-  pCur->iRowid = pCur->ctx.node_path[pCur->ctx.cur_idx];
+  } else {
+    pCur->key_len = dict->next(*pCur->ctx, pCur->key_buf, pCur->val_buf, &pCur->val_len);
+    //printf("Key: [%.*s], %d\n", pCur->key_len, pCur->key_buf, pCur->key_len);
+  }
+  pCur->iRowid = pCur->ctx->node_path[pCur->ctx->cur_idx];
   pCur->is_eof = false;
   if (pCur->key_len == 0)
     pCur->is_eof = true;
@@ -184,9 +197,11 @@ static int madrasOpen(sqlite3_vtab *p, sqlite3_vtab_cursor **ppCursor){
   if( pCur==0 ) return SQLITE_NOMEM;
   memset(pCur, 0, sizeof(*pCur));
   madras_vtab *vtab = (madras_vtab *) p;
-  madras_dv1::static_dict *dict = &vtab->dict;
+  madras_dv1::static_dict *dict = vtab->dict;
   printf("Max Key Len: %u, val len: %u, max lvl: %u\n", dict->get_max_key_len(), dict->get_max_val_len(), dict->get_max_level());
-  pCur->ctx.init(dict->get_max_key_len(), dict->get_max_level());
+  pCur->ctx = new madras_dv1::dict_iter_ctx();
+  memset(pCur->ctx, '\0', sizeof(madras_dv1::dict_iter_ctx));
+  pCur->ctx->init(dict->get_max_key_len(), dict->get_max_level());
   *ppCursor = &pCur->base;
   pCur->init();
   pCur->key_buf = (uint8_t *) sqlite3_malloc_stub(dict->get_max_key_len());
@@ -199,7 +214,12 @@ static int madrasOpen(sqlite3_vtab *p, sqlite3_vtab_cursor **ppCursor){
 ** Destructor for a madras_cursor.
 */
 static int madrasClose(sqlite3_vtab_cursor *cur){
-  madras_cursor *pCur = (madras_cursor*)cur;
+  madras_cursor *pCur = (madras_cursor*) cur;
+  pCur->ctx->close();
+  sqlite3_free_stub(pCur->key_buf);
+  sqlite3_free_stub(pCur->val_buf);
+  sqlite3_free_stub(pCur->given_val);
+  delete pCur->ctx;
   sqlite3_free_stub(pCur);
   return SQLITE_OK;
 }
@@ -268,17 +288,17 @@ static int madrasFilter(
 ){
   madras_cursor *pCur = (madras_cursor *)pVtabCursor;
   madras_vtab *vtab = (madras_vtab *) pCur->base.pVtab;
-  madras_dv1::static_dict *dict = &vtab->dict;
+  madras_dv1::static_dict *dict = vtab->dict;
   pCur->key_len = 0;
-  pCur->ctx.init(dict->get_max_key_len(), dict->get_max_level());
+  pCur->ctx->init(dict->get_max_key_len(), dict->get_max_level());
   printf("idxNum: %d, argc: %d, idxStr: %s\n", idxNum, argc, idxStr);
   for (int i = 0; i < argc; i++) {
     printf("arg %d: %s\n", i, sqlite3_value_text(argv[i]));
   }
   if (argc == 1 && idxNum == 1) {
     const uint8_t *key = sqlite3_value_text(argv[0]);
-    pCur->ctx = dict->find_first(key, strlen((const char *) key));
-    pCur->ctx.to_skip_first_leaf = false;
+    bool is_success = dict->find_first(key, strlen((const char *) key), *pCur->ctx);
+    pCur->ctx->to_skip_first_leaf = false;
     pCur->is_point_lookup = true;
     pCur->key_len = 0;
   }
