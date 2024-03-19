@@ -4,3 +4,4 @@
 sqlite-amalgamation*
 madras
 madras.dylib
+*.txt

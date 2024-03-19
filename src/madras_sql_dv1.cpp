@@ -112,13 +112,35 @@ static int madrasConnect(
   std::string vtct = "CREATE TABLE ";
   uint8_t *names_pos = pNew->dict->names_pos;
   char *names_loc = pNew->dict->names_loc;
-  vtct.append(strncmp(names_loc, "vtab", 4) == 0 ? argv[2] : names_loc);
+  char *table_name_loc = names_loc + madras_dv1::cmn::read_uint16(names_pos);
+  vtct.append(strncmp(names_loc, "vtab", 4) == 0 ? argv[2] : table_name_loc);
   vtct.append(" (");
   int col_count = pNew->dict->val_count + 1;
-  for (int i = 0; i < col_count; i++) {
-    if (i > 0)
+  for (int i = 1; i <= col_count; i++) {
+    if (i > 1)
       vtct.append(", ");
     vtct.append(names_loc + madras_dv1::cmn::read_uint16(names_pos + i * 2));
+    char type_char = names_loc[i - 1];
+    switch (type_char) {
+      case 't':
+        vtct.append(" text");
+        break;
+      case '*':
+        vtct.append(" varchar");
+        break;
+      case '0': case 'i':
+        vtct.append(" integer");
+        break;
+      case '1': case '2': case '3': case '4': case '5':
+      case '6': case '7': case '8': case '9':
+      case 'j': case 'k': case 'l': case 'm': case 'n':
+      case 'o': case 'p': case 'q': case 'r':
+      case 'x': case 'X': case 'y': case 'Y':
+        vtct.append(" double");
+        break;
+      default:
+        vtct.append(" text");
+    }
   }
   vtct.append(")");
   printf("vtct: %s\n", vtct.c_str());
@@ -244,14 +266,47 @@ static int madrasColumn(
   int i                       /* Which column to return */
 ){
   madras_cursor *pCur = (madras_cursor*)cur;
-  switch( i ){
-    case 0:
-      sqlite3_result_text(ctx, (const char *) pCur->key_buf, pCur->key_len, NULL);
+  madras_vtab *vtab = (madras_vtab *) pCur->base.pVtab;
+  madras_dv1::dict_iter_ctx *iter_ctx = pCur->ctx;
+  uint8_t *names_pos = vtab->dict->names_pos;
+  char *names_loc = vtab->dict->names_loc;
+  char data_type = names_loc[i];
+  uint8_t *out_buf;
+  int out_buf_len;
+  if (i == 0) {
+    out_buf = pCur->key_buf;
+    out_buf_len = pCur->key_len;
+  } else {
+    vtab->dict->get_col_val(iter_ctx->node_path[iter_ctx->cur_idx], i - 1, &pCur->val_len, pCur->val_buf);
+    out_buf = pCur->val_buf;
+    out_buf_len = pCur->val_len;
+  }
+  switch (data_type) {
+    case 't':
+      sqlite3_result_text(ctx, (const char *) out_buf, out_buf_len, NULL);
+      break;
+    case '*':
+      sqlite3_result_blob(ctx, (const char *) out_buf, out_buf_len, NULL);
+      break;
+    case '0':
+      sqlite3_result_int(ctx, madras_dv1::cmn::read_svint60(out_buf));
+      break;
+    case 'i':
+      sqlite3_result_int(ctx, madras_dv1::cmn::read_svint61(out_buf));
+      break;
+    case '1': case '2': case '3': case '4': case '5':
+    case '6': case '7': case '8': case '9':
+      sqlite3_result_double(ctx, vtab->dict->get_val_int60_dbl(out_buf, data_type));
+      break;
+    case 'j': case 'k': case 'l': case 'm': case 'n':
+    case 'o': case 'p': case 'q': case 'r':
+      sqlite3_result_double(ctx, vtab->dict->get_val_int60_dbl(out_buf, data_type));
+      break;
+    case 'x': case 'X': case 'y': case 'Y':
+      sqlite3_result_double(ctx, vtab->dict->get_val_int15_dbl(out_buf, data_type));
       break;
     default:
-      sqlite3_result_text(ctx, (const char *) pCur->val_buf, pCur->val_len, NULL);
-      //sqlite3_result_int(ctx, read_uint32(pCur->val_buf));
-      break;
+      sqlite3_result_text(ctx, (const char *) out_buf, out_buf_len, NULL);
   }
   return SQLITE_OK;
 }
@@ -295,7 +350,7 @@ static int madrasFilter(
   for (int i = 0; i < argc; i++) {
     printf("arg %d: %s\n", i, sqlite3_value_text(argv[i]));
   }
-  if (argc == 1 && idxNum == 1) {
+  if (idxNum == 1 && (argc == 1 || (argc == 2 && argv[1] == NULL))) {
     const uint8_t *key = sqlite3_value_text(argv[0]);
     bool is_success = dict->find_first(key, strlen((const char *) key), *pCur->ctx);
     pCur->ctx->to_skip_first_leaf = false;
@@ -327,8 +382,10 @@ static int madrasBestIndex(
   for (int i = 0; i < pIdxInfo->nConstraint; i++) {
     printf("c%d: iColumn: %d, op: %d, usable: %d\n", i, pIdxInfo->aConstraint[i].iColumn, pIdxInfo->aConstraint[i].op, pIdxInfo->aConstraint[i].usable);
     if (pIdxInfo->aConstraint[i].usable) {
-      pIdxInfo->aConstraintUsage[i].argvIndex = i + 1;
-      pIdxInfo->idxNum = pIdxInfo->aConstraint[i].iColumn + 1;
+      if (pIdxInfo->aConstraint[i].op != 73) {
+        pIdxInfo->aConstraintUsage[i].argvIndex = i + 1;
+        pIdxInfo->idxNum = pIdxInfo->aConstraint[i].iColumn + 1;
+      }
     }
   }
   // if (pIdxInfo->nConstraint == 1 && pIdxInfo->aConstraint[0].iColumn == 0) {
