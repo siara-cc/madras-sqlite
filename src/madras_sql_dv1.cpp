@@ -200,7 +200,7 @@ static int madrasNext(sqlite3_vtab_cursor *cur){
     pCur->is_eof = true;
     return SQLITE_OK;
   } else {
-    pCur->key_len = dict->next(*pCur->ctx, pCur->key_buf, pCur->val_buf, &pCur->val_len);
+    pCur->key_len = dict->next(*pCur->ctx, pCur->key_buf);
     //printf("Key: [%.*s], %d\n", pCur->key_len, pCur->key_buf, pCur->key_len);
   }
   pCur->iRowid = pCur->ctx->node_path[pCur->ctx->cur_idx];
@@ -226,9 +226,9 @@ static int madrasOpen(sqlite3_vtab *p, sqlite3_vtab_cursor **ppCursor){
   pCur->ctx->init(dict->get_max_key_len(), dict->get_max_level());
   *ppCursor = &pCur->base;
   pCur->init();
-  pCur->key_buf = (uint8_t *) sqlite3_malloc_stub(dict->get_max_key_len());
-  pCur->val_buf = (uint8_t *) sqlite3_malloc_stub(dict->get_max_val_len());
-  pCur->given_val = (uint8_t *) sqlite3_malloc_stub(dict->get_max_val_len());
+  pCur->key_buf = new uint8_t[dict->get_max_key_len()];
+  pCur->val_buf = new uint8_t[dict->get_max_val_len()];
+  pCur->given_val = new uint8_t[dict->get_max_val_len()];
   return SQLITE_OK;
 }
 
@@ -238,9 +238,9 @@ static int madrasOpen(sqlite3_vtab *p, sqlite3_vtab_cursor **ppCursor){
 static int madrasClose(sqlite3_vtab_cursor *cur){
   madras_cursor *pCur = (madras_cursor*) cur;
   pCur->ctx->close();
-  sqlite3_free_stub(pCur->key_buf);
-  sqlite3_free_stub(pCur->val_buf);
-  sqlite3_free_stub(pCur->given_val);
+  delete pCur->key_buf;
+  delete pCur->val_buf;
+  delete pCur->given_val;
   delete pCur->ctx;
   sqlite3_free_stub(pCur);
   return SQLITE_OK;
@@ -283,10 +283,10 @@ static int madrasColumn(
   }
   switch (data_type) {
     case 't':
-      sqlite3_result_text(ctx, (const char *) out_buf, out_buf_len, NULL);
+      sqlite3_result_text(ctx, (const char *) out_buf, out_buf_len, SQLITE_TRANSIENT);
       break;
     case '*':
-      sqlite3_result_blob(ctx, (const char *) out_buf, out_buf_len, NULL);
+      sqlite3_result_blob(ctx, out_buf, out_buf_len, SQLITE_TRANSIENT);
       break;
     case '0':
       sqlite3_result_int(ctx, madras_dv1::cmn::read_svint60(out_buf));
@@ -305,8 +305,6 @@ static int madrasColumn(
     case 'x': case 'X': case 'y': case 'Y':
       sqlite3_result_double(ctx, vtab->dict->get_val_int15_dbl(out_buf, data_type));
       break;
-    default:
-      sqlite3_result_text(ctx, (const char *) out_buf, out_buf_len, NULL);
   }
   return SQLITE_OK;
 }
