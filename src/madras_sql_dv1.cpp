@@ -110,17 +110,15 @@ static int madrasConnect(
   pNew->dict = new madras_dv1::static_dict();
   pNew->dict->load(argv[3]);
   std::string vtct = "CREATE TABLE ";
-  uint8_t *names_pos = pNew->dict->names_pos;
-  char *names_loc = pNew->dict->names_loc;
-  char *table_name_loc = names_loc + madras_dv1::cmn::read_uint16(names_pos);
-  vtct.append(strncmp(names_loc, "vtab", 4) == 0 ? argv[2] : table_name_loc);
+  const char *table_name = pNew->dict->get_table_name();
+  vtct.append(strncmp(table_name, "vtab", 4) == 0 ? argv[2] : table_name);
   vtct.append(" (");
-  int col_count = pNew->dict->val_count + 1;
-  for (int i = 1; i <= col_count; i++) {
-    if (i > 1)
+  int col_count = pNew->dict->get_column_count();
+  for (int i = 0; i < col_count; i++) {
+    if (i > 0)
       vtct.append(", ");
-    vtct.append(names_loc + madras_dv1::cmn::read_uint16(names_pos + i * 2));
-    char type_char = names_loc[i - 1];
+    vtct.append(pNew->dict->get_column_name(i));
+    const char type_char = pNew->dict->get_column_type(i);
     switch (type_char) {
       case 't':
         vtct.append(" text");
@@ -270,7 +268,7 @@ static int madrasColumn(
   madras_dv1::dict_iter_ctx *iter_ctx = pCur->ctx;
   uint8_t *names_pos = vtab->dict->names_pos;
   char *names_loc = vtab->dict->names_loc;
-  char data_type = names_loc[i];
+  char data_type = vtab->dict->get_column_type(i);
   uint8_t *out_buf;
   int out_buf_len;
   if (i == 0) {
