@@ -203,7 +203,7 @@ static int madrasNext(sqlite3_vtab_cursor *cur){
   }
   pCur->iRowid = pCur->ctx->node_path[pCur->ctx->cur_idx];
   pCur->is_eof = false;
-  if (pCur->key_len == 0)
+  if (pCur->key_len == -1)
     pCur->is_eof = true;
   return SQLITE_OK;
 }
@@ -378,7 +378,7 @@ static int madrasBestIndex(
   for (int i = 0; i < pIdxInfo->nConstraint; i++) {
     printf("c%d: iColumn: %d, op: %d, usable: %d\n", i, pIdxInfo->aConstraint[i].iColumn, pIdxInfo->aConstraint[i].op, pIdxInfo->aConstraint[i].usable);
     if (pIdxInfo->aConstraint[i].usable) {
-      if (pIdxInfo->aConstraint[i].op != 73) {
+      if (pIdxInfo->aConstraint[i].op != 73 && pIdxInfo->aConstraint[i].op != 74) {
         pIdxInfo->aConstraintUsage[i].argvIndex = i + 1;
         pIdxInfo->idxNum = pIdxInfo->aConstraint[i].iColumn + 1;
       }
