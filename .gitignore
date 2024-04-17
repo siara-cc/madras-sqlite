@@ -3,5 +3,5 @@
 *.dSYM
 sqlite-amalgamation*
 madras
-madras.dylib
+*.dylib
 *.txt
