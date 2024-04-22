@@ -211,7 +211,8 @@ static int madrasNext(sqlite3_vtab_cursor *cur){
     if (pCur->key_len == -1)
       pCur->is_eof = true;
   } else {
-    pCur->iRowid++;
+    pCur->iRowid = pCur->cv.node_id;
+    pCur->cv.node_id++;
     if (pCur->iRowid >= dict->node_count)
       pCur->is_eof = true;
   }
@@ -278,8 +279,6 @@ static int madrasColumn(
   madras_cursor *pCur = (madras_cursor*)cur;
   madras_vtab *vtab = (madras_vtab *) pCur->base.pVtab;
   madras_dv1::dict_iter_ctx *iter_ctx = pCur->ctx;
-  uint8_t *names_pos = vtab->dict->names_pos;
-  char *names_loc = vtab->dict->names_loc;
   char data_type = vtab->dict->get_column_type(i);
   uint8_t *out_buf;
   int out_buf_len;
@@ -379,8 +378,10 @@ static int madrasFilter(
     memcpy(pCur->given_val, val, pCur->given_val_len);
     pCur->cv.init_cv_nid0(dict->get_trie_loc());
   }
-  if (dict->key_count == 0)
+  if (dict->key_count == 0) {
+    pCur->cv.node_id = 0;
     pCur->iRowid = 0;
+  }
   return madrasNext(pVtabCursor);
 }
 
