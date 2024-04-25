@@ -248,10 +248,10 @@ static int madrasOpen(sqlite3_vtab *p, sqlite3_vtab_cursor **ppCursor){
 static int madrasClose(sqlite3_vtab_cursor *cur){
   madras_cursor *pCur = (madras_cursor*) cur;
   pCur->ctx->close();
-  delete pCur->key_buf;
-  delete pCur->val_buf;
-  delete pCur->given_val;
-  delete pCur->ptr_bit_count;
+  delete [] pCur->key_buf;
+  delete [] pCur->val_buf;
+  delete [] pCur->given_val;
+  delete [] pCur->ptr_bit_count;
   delete pCur->ctx;
   sqlite3_free_stub(pCur);
   return SQLITE_OK;
@@ -303,21 +303,21 @@ static int madrasColumn(
       sqlite3_result_blob(ctx, out_buf, out_buf_len, SQLITE_TRANSIENT);
       break;
     case '0':
-      sqlite3_result_int(ctx, madras_dv1::cmn::read_svint60(out_buf));
+      sqlite3_result_int(ctx, *((int64_t *)out_buf));
       break;
     case 'i':
-      sqlite3_result_int(ctx, madras_dv1::cmn::read_svint61(out_buf));
+      sqlite3_result_int(ctx, *((int64_t *)out_buf));
       break;
     case '1': case '2': case '3': case '4': case '5':
     case '6': case '7': case '8': case '9':
-      sqlite3_result_double(ctx, vtab->dict->get_val_int60_dbl(out_buf, data_type));
+      sqlite3_result_double(ctx, *((double*)out_buf));
       break;
     case 'j': case 'k': case 'l': case 'm': case 'n':
     case 'o': case 'p': case 'q': case 'r':
-      sqlite3_result_double(ctx, vtab->dict->get_val_int60_dbl(out_buf, data_type));
+      sqlite3_result_double(ctx, *((double*)out_buf));
       break;
     case 'x': case 'X': case 'y': case 'Y':
-      sqlite3_result_double(ctx, vtab->dict->get_val_int15_dbl(out_buf, data_type));
+      sqlite3_result_double(ctx, *((double*)out_buf));
       break;
   }
   return SQLITE_OK;
@@ -359,7 +359,8 @@ static int madrasFilter(
   pCur->key_len = 0;
   pCur->ctx->init(dict->get_max_key_len(), dict->get_max_level());
   printf("idxNum: %d, argc: %d, idxStr: %s\n", idxNum, argc, idxStr);
-  memset(pCur->ptr_bit_count, 0xFF, dict->get_column_count() * sizeof(uint32_t));
+  for (int i = 0; i < dict->get_column_count(); i++)
+    pCur->ptr_bit_count[i] = UINT32_MAX;
   for (int i = 0; i < argc; i++) {
     printf("arg %d: %s\n", i, sqlite3_value_text(argv[i]));
   }
