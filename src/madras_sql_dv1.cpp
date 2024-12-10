@@ -47,7 +47,6 @@
 #include <string>
 #include "madras_c_stubs.h"
 #include "../../madras-trie/src/madras_dv1.hpp"
-#include "../../ds_common/src/gen.hpp"
 
 /* madras_vtab is a subclass of sqlite3_vtab which is
 ** underlying representation of the virtual table
@@ -55,7 +54,7 @@
 typedef struct madras_vtab madras_vtab;
 struct madras_vtab {
   sqlite3_vtab base;  /* Base class - must be first */
-  madras_dv1::static_dict *dict;
+  madras_dv1::static_trie_map *dict;
 };
 
 /* madras_cursor is a subclass of sqlite3_vtab_cursor which will
@@ -65,16 +64,16 @@ struct madras_vtab {
 typedef struct madras_cursor madras_cursor;
 struct madras_cursor {
   sqlite3_vtab_cursor base;  /* Base class - must be first */
-  madras_dv1::dict_iter_ctx *ctx;
+  madras_dv1::iter_ctx *ctx;
   uint8_t *key_buf;
   uint32_t *ptr_bit_count;
   uint8_t *val_buf;
-  int key_len;
-  int val_len;
+  size_t key_len;
+  size_t val_len;
   bool is_point_lookup;
   bool is_val_scan;
   bool is_eof;
-  madras_dv1::ctx_vars cv;
+  madras_dv1::input_ctx cv;
   uint8_t *given_val;
   int given_val_len;
   sqlite3_int64 iRowid;      /* The rowid */
@@ -109,9 +108,9 @@ static int madrasConnect(
   *ppVtab = (sqlite3_vtab*)pNew;
   if( pNew==0 ) return SQLITE_NOMEM;
   memset(pNew, 0, sizeof(*pNew));
-  pNew->dict = new madras_dv1::static_dict();
-  // pNew->dict->map_file_to_mem(argv[3]);
-  pNew->dict->map_file_to_mem(argv[3]);
+  pNew->dict = new madras_dv1::static_trie_map();
+  //pNew->dict->map_file_to_mem(argv[3]);
+  pNew->dict->load(argv[3]);
   std::string vtct = "CREATE TABLE ";
   const char *table_name = pNew->dict->get_table_name();
   vtct.append(strncmp(table_name, "vtab", 4) == 0 ? argv[2] : table_name);
@@ -185,36 +184,36 @@ static int madrasNext(sqlite3_vtab_cursor *cur){
     return SQLITE_OK;
   }
   madras_vtab *vtab = (madras_vtab *) pCur->base.pVtab;
-  madras_dv1::static_dict *dict = vtab->dict;
+  madras_dv1::static_trie_map *dict = vtab->dict;
   if (pCur->is_val_scan && pCur->is_point_lookup) {
     //printf("Given val: %d, [%.*s]\n", pCur->given_val_len, pCur->given_val_len, pCur->given_val);
-    while (dict->val_map->next_val(pCur->cv, &pCur->val_len, pCur->val_buf)) {
-      if (gen::compare(pCur->val_buf, pCur->val_len, pCur->given_val, pCur->given_val_len) == 0) {
-        //printf("Val: %d, [%.*s]\n", pCur->val_len, pCur->val_len, pCur->val_buf);
-        if (dict->key_count > 0)
-          dict->reverse_lookup_from_node_id(pCur->cv.node_id, &pCur->key_len, pCur->key_buf);
-        pCur->iRowid = pCur->cv.node_id;
-        pCur->cv.node_id++;
-        return SQLITE_OK;
-      }
-      pCur->cv.node_id++;
-    }
+    // while (dict->val_map->next_val(pCur->cv, &pCur->val_len, pCur->val_buf)) {
+    //   if (gen::compare(pCur->val_buf, pCur->val_len, pCur->given_val, pCur->given_val_len) == 0) {
+    //     //printf("Val: %d, [%.*s]\n", pCur->val_len, pCur->val_len, pCur->val_buf);
+    //     if (dict->key_count > 0)
+    //       dict->reverse_lookup_from_node_id(pCur->cv.node_id, &pCur->key_len, pCur->key_buf);
+    //     pCur->iRowid = pCur->cv.node_id;
+    //     pCur->cv.node_id++;
+    //     return SQLITE_OK;
+    //   }
+    //   pCur->cv.node_id++;
+    // }
     pCur->is_eof = true;
     return SQLITE_OK;
   } else {
-    if (dict->key_count > 0)
+    if (dict->get_key_count() > 0)
       pCur->key_len = dict->next(*pCur->ctx, pCur->key_buf);
     //printf("Key: [%.*s], %d\n", pCur->key_len, pCur->key_buf, pCur->key_len);
   }
   pCur->is_eof = false;
-  if (dict->key_count > 0) {
+  if (dict->get_key_count() > 0) {
     pCur->iRowid = pCur->ctx->node_path[pCur->ctx->cur_idx];
     if (pCur->key_len == -2)
       pCur->is_eof = true;
   } else {
     pCur->iRowid = pCur->cv.node_id;
     pCur->cv.node_id++;
-    if (pCur->iRowid >= dict->node_count)
+    if (pCur->iRowid >= dict->get_node_count())
       pCur->is_eof = true;
   }
   return SQLITE_OK;
@@ -229,10 +228,10 @@ static int madrasOpen(sqlite3_vtab *p, sqlite3_vtab_cursor **ppCursor){
   if( pCur==0 ) return SQLITE_NOMEM;
   memset(pCur, 0, sizeof(*pCur));
   madras_vtab *vtab = (madras_vtab *) p;
-  madras_dv1::static_dict *dict = vtab->dict;
+  madras_dv1::static_trie_map *dict = vtab->dict;
   printf("Max Key Len: %u, val len: %u, max lvl: %u, column_count: %u\n", dict->get_max_key_len(), dict->get_max_val_len(), dict->get_max_level(), dict->get_column_count());
-  pCur->ctx = new madras_dv1::dict_iter_ctx();
-  memset(pCur->ctx, '\0', sizeof(madras_dv1::dict_iter_ctx));
+  pCur->ctx = new madras_dv1::iter_ctx();
+  memset(pCur->ctx, '\0', sizeof(madras_dv1::iter_ctx));
   pCur->ctx->init(dict->get_max_key_len(), dict->get_max_level());
   *ppCursor = &pCur->base;
   pCur->init();
@@ -279,24 +278,24 @@ static int madrasColumn(
 ){
   madras_cursor *pCur = (madras_cursor*)cur;
   madras_vtab *vtab = (madras_vtab *) pCur->base.pVtab;
-  madras_dv1::dict_iter_ctx *iter_ctx = pCur->ctx;
+  madras_dv1::iter_ctx *iter_ctx = pCur->ctx;
   char data_type = vtab->dict->get_column_type(i);
   uint8_t *out_buf;
   int out_buf_len;
-  if (i == 0 && vtab->dict->key_count > 0) {
+  if (vtab->dict->get_max_val_len(i) == 0 && vtab->dict->get_key_count() > 0) {
     out_buf = pCur->key_buf;
     out_buf_len = pCur->key_len;
   } else {
-    if (vtab->dict->key_count > 0)
-      i--;
     uint32_t cur_node_id = pCur->iRowid;
-    if (vtab->dict->key_count > 0)
+    if (vtab->dict->get_key_count() > 0)
       cur_node_id = iter_ctx->node_path[iter_ctx->cur_idx];
     vtab->dict->get_col_val(cur_node_id, i, &pCur->val_len, pCur->val_buf, &pCur->ptr_bit_count[i]);
     out_buf = pCur->val_buf;
     out_buf_len = pCur->val_len;
   }
-  if (out_buf_len == -1)
+  if ((data_type >= '0' && data_type <= '9' && out_buf[0] == 0)
+        || ((data_type == 't' || data_type == '*') 
+        && memcmp(out_buf, madras_dv1::NULL_VALUE, madras_dv1::NULL_VALUE_LEN) == 0))
     sqlite3_result_null(ctx);
   else {
     switch (data_type) {
@@ -352,7 +351,7 @@ static int madrasFilter(
 ){
   madras_cursor *pCur = (madras_cursor *)pVtabCursor;
   madras_vtab *vtab = (madras_vtab *) pCur->base.pVtab;
-  madras_dv1::static_dict *dict = vtab->dict;
+  madras_dv1::static_trie_map *dict = vtab->dict;
   pCur->key_len = 0;
   pCur->ctx->init(dict->get_max_key_len(), dict->get_max_level());
   printf("idxNum: %d, argc: %d, idxStr: %s\n", idxNum, argc, idxStr);
@@ -361,7 +360,7 @@ static int madrasFilter(
   for (int i = 0; i < argc; i++) {
     printf("arg %d: %s\n", i, sqlite3_value_text(argv[i]));
   }
-  if (dict->key_count > 0 && idxNum == 1 && (argc == 1 || (argc == 2 && argv[1] == NULL))) {
+  if (dict->get_key_count() > 0 && idxNum == 2 && (argc == 1 || (argc == 2 && argv[1] == NULL))) {
     const uint8_t *key = sqlite3_value_text(argv[0]);
     int key_len = 0;
     if (key != NULL)
@@ -369,9 +368,9 @@ static int madrasFilter(
     bool is_success = dict->find_first(key, key_len, *pCur->ctx, true);
     pCur->ctx->to_skip_first_leaf = false;
     pCur->is_point_lookup = true;
-    pCur->key_len = 0;
+    pCur->key_len = -2;
   }
-  if (argc == 1 && idxNum == 2) {
+  if (argc == 1 && idxNum == 1) {
     pCur->is_val_scan = true;
     pCur->is_point_lookup = true;
     const uint8_t *val = sqlite3_value_text(argv[0]);
@@ -379,9 +378,8 @@ static int madrasFilter(
     if (val != NULL)
       pCur->given_val_len = strlen((const char *) val);
     memcpy(pCur->given_val, val, pCur->given_val_len);
-    pCur->cv.init_cv_nid0(dict->get_trie_loc());
   }
-  if (dict->key_count == 0) {
+  if (dict->get_key_count() == 0) {
     pCur->cv.node_id = 0;
     pCur->iRowid = 0;
   }
